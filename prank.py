@@ -2,29 +2,14 @@ import os
 import sys
 import math
 import random
+import time
 import tkinter as tk
 
 from PIL import Image, ImageTk, ImageGrab
 import cv2
 
-# --- Поиск VLC в стандартных папках Windows ДО import vlc ---
-if sys.platform.startswith("win"):
-    import glob
-    for _p in (glob.glob(r"C:\Program Files\VideoLAN\VLC*") +
-               glob.glob(r"C:\Program Files (x86)\VideoLAN\VLC*")):
-        if os.path.isdir(_p):
-            try:
-                os.add_dll_directory(_p)
-            except (AttributeError, OSError):
-                pass
-            os.environ["PATH"] = _p + os.pathsep + os.environ.get("PATH", "")
-            break
-
-try:
-    import vlc
-    HAS_VLC = True
-except ImportError:
-    HAS_VLC = False
+import pygame
+from moviepy.editor import VideoFileClip
 
 
 AVATAR_FILE = "Dasha.jpeg"
@@ -32,7 +17,6 @@ VIDEO_FILE = "Dasha.mp4"
 
 
 def resource_path(rel_name):
-    """Путь к ресурсу и в режиме скрипта, и внутри собранного PyInstaller exe."""
     base = getattr(sys, "_MEIPASS", os.path.abspath("."))
     return os.path.join(base, rel_name)
 
@@ -44,10 +28,15 @@ class YandexCallPrank:
         self.root.configure(bg="#1a1a2e")
         self.cap = None
         self.after_id = None
-        self.vlc_instance = None
-        self.vlc_player = None
         self._exploding = False
-        self._video_ended = False
+
+        # видео
+        self.clip = None
+        self.video_label = None
+        self.video_start = None
+        self.video_after = None
+        self.mixer_ready = False
+
         self.build_incoming_call()
 
     # ---------- утилиты ----------
@@ -122,11 +111,15 @@ class YandexCallPrank:
         main = tk.Frame(self.root, bg="#0b0b13")
         main.pack(fill="both", expand=True, padx=10, pady=10)
 
-        self.video_frame = tk.Frame(main, bg="black",
-                                    bd=2, relief="solid")
-        self.video_frame.pack(side="left", fill="both",
+        # слева видео (Label, а не Frame)
+        self.video_label = tk.Label(main, bg="black",
+                                    bd=2, relief="solid",
+                                    text="Загрузка видео...", fg="white",
+                                    font=("Segoe UI", 14))
+        self.video_label.pack(side="left", fill="both",
                               expand=True, padx=5)
 
+        # справа вебка
         self.cam_label = tk.Label(main, bg="black",
                                   bd=2, relief="solid",
                                   text="Нет камеры", fg="white",
@@ -137,58 +130,76 @@ class YandexCallPrank:
         self.root.update_idletasks()
         self.root.update()
 
-        self.root.after(300, self._start_dasha_video)
+        self.root.after(200, self._start_dasha_video)
 
         self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         if not self.cap.isOpened():
             self.cap = cv2.VideoCapture(0)
         self.update_webcam()
 
+    # ---------- видео Даши ----------
     def _start_dasha_video(self):
-        if not HAS_VLC:
-            tk.Label(self.video_frame,
-                     text="Установите VLC с videolan.org",
-                     fg="white", bg="black",
-                     font=("Segoe UI", 14)).pack(expand=True)
-            return
-
         video_path = resource_path(VIDEO_FILE)
         if not os.path.exists(video_path):
-            tk.Label(self.video_frame,
-                     text=f"Нет файла {VIDEO_FILE}",
-                     fg="white", bg="black",
-                     font=("Segoe UI", 14)).pack(expand=True)
+            self.video_label.config(text=f"Нет файла {VIDEO_FILE}")
             return
 
-        self.vlc_instance = vlc.Instance("--no-video-title-show")
-        self.vlc_player = self.vlc_instance.media_player_new()
-        media = self.vlc_instance.media_new(os.path.abspath(video_path))
-        self.vlc_player.set_media(media)
+        try:
+            self.clip = VideoFileClip(video_path, audio=True)
+        except Exception as e:
+            self.video_label.config(text=f"Ошибка видео: {e}")
+            return
 
-        hwnd = self.video_frame.winfo_id()
-        if sys.platform.startswith("win"):
-            self.vlc_player.set_hwnd(hwnd)
-        elif sys.platform == "darwin":
-            self.vlc_player.set_nsobject(hwnd)
-        else:
-            self.vlc_player.set_xwindow(hwnd)
+        # Звук
+        try:
+            pygame.mixer.init()
+            pygame.mixer.music.load(video_path)
+            pygame.mixer.music.play()
+            self.mixer_ready = True
+        except Exception:
+            self.mixer_ready = False
 
-        em = self.vlc_player.event_manager()
-        em.event_attach(vlc.EventType.MediaPlayerEndReached,
-                        self._on_video_end)
+        self.video_start = time.time()
+        fps = self.clip.fps or 25
+        self.frame_delay = max(1, int(1000 / fps))
 
-        self.vlc_player.play()
+        self._play_video_frame()
 
-    def _on_video_end(self, event):
-        # Вызывается из потока VLC. Только ставим флаг,
-        # главный поток его подхватит в update_webcam.
-        self._video_ended = True
+    def _play_video_frame(self):
+        if self._exploding or self.clip is None:
+            return
 
+        elapsed = time.time() - self.video_start
+        if elapsed >= self.clip.duration:
+            if self.mixer_ready:
+                try:
+                    pygame.mixer.music.stop()
+                except Exception:
+                    pass
+            self.explode_and_close()
+            return
+
+        try:
+            frame = self.clip.get_frame(elapsed)
+        except Exception:
+            self.explode_and_close()
+            return
+
+        img = Image.fromarray(frame)
+        img.thumbnail((500, 500))
+        photo = ImageTk.PhotoImage(img)
+        self.video_label.config(image=photo, text="")
+        self.video_label.image = photo
+
+        # компенсируем дрейф: next = start + (n+1)/fps
+        # вместо фиксированного after(frame_delay) — считаем от старта
+        next_time = self.video_start + (math.floor(elapsed * (1000 / self.frame_delay)) + 1) * (self.frame_delay / 1000.0)
+        wait_ms = max(1, int((next_time - time.time()) * 1000))
+        self.video_after = self.root.after(wait_ms, self._play_video_frame)
+
+    # ---------- вебка ----------
     def update_webcam(self):
         if self._exploding:
-            return
-        if self._video_ended:
-            self.explode_and_close()
             return
 
         if self.cap is not None and self.cap.isOpened():
@@ -209,14 +220,15 @@ class YandexCallPrank:
             return
         self._exploding = True
 
-        if self.after_id:
-            try:
-                self.root.after_cancel(self.after_id)
-            except tk.TclError:
-                pass
-            self.after_id = None
+        for aid_attr in ("after_id", "video_after"):
+            aid = getattr(self, aid_attr, None)
+            if aid:
+                try:
+                    self.root.after_cancel(aid)
+                except tk.TclError:
+                    pass
+                setattr(self, aid_attr, None)
 
-        # Скрин живой сцены ДО остановки VLC
         self.root.update_idletasks()
 
         x = self.root.winfo_rootx()
@@ -230,14 +242,22 @@ class YandexCallPrank:
             self._hard_close()
             return
 
+        # освобождаем ресурсы
         if self.cap is not None:
             self.cap.release()
             self.cap = None
-        if self.vlc_player is not None:
+        if self.clip is not None:
             try:
-                self.vlc_player.stop()
+                self.clip.close()
             except Exception:
                 pass
+            self.clip = None
+        if self.mixer_ready:
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
+            self.mixer_ready = False
 
         self.root.withdraw()
 
@@ -326,11 +346,18 @@ class YandexCallPrank:
             except Exception:
                 pass
             self.cap = None
-        if self.vlc_player is not None:
+        if self.clip is not None:
             try:
-                self.vlc_player.stop()
+                self.clip.close()
             except Exception:
                 pass
+            self.clip = None
+        if self.mixer_ready:
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
+            self.mixer_ready = False
         try:
             self.root.destroy()
         except tk.TclError:
