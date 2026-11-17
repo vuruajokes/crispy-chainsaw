@@ -14,6 +14,7 @@ from moviepy.editor import VideoFileClip
 
 AVATAR_FILE = "Dasha.jpeg"
 VIDEO_FILE = "Dasha.mp4"
+ICON_FILE = "icon.ico"
 
 
 def resource_path(rel_name):
@@ -25,12 +26,18 @@ class YandexCallPrank:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Входящий звонок - Яндекс")
+
+        # иконка окна (Windows: .ico; на других ОС тихо игнорируется)
+        try:
+            self.root.iconbitmap(resource_path(ICON_FILE))
+        except Exception:
+            pass
+
         self.root.configure(bg="#1a1a2e")
         self.cap = None
         self.after_id = None
         self._exploding = False
 
-        # видео
         self.clip = None
         self.video_label = None
         self.video_start = None
@@ -111,7 +118,6 @@ class YandexCallPrank:
         main = tk.Frame(self.root, bg="#0b0b13")
         main.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # слева видео (Label, а не Frame)
         self.video_label = tk.Label(main, bg="black",
                                     bd=2, relief="solid",
                                     text="Загрузка видео...", fg="white",
@@ -119,7 +125,6 @@ class YandexCallPrank:
         self.video_label.pack(side="left", fill="both",
                               expand=True, padx=5)
 
-        # справа вебка
         self.cam_label = tk.Label(main, bg="black",
                                   bd=2, relief="solid",
                                   text="Нет камеры", fg="white",
@@ -150,7 +155,6 @@ class YandexCallPrank:
             self.video_label.config(text=f"Ошибка видео: {e}")
             return
 
-        # Звук
         try:
             pygame.mixer.init()
             pygame.mixer.music.load(video_path)
@@ -191,9 +195,9 @@ class YandexCallPrank:
         self.video_label.config(image=photo, text="")
         self.video_label.image = photo
 
-        # компенсируем дрейф: next = start + (n+1)/fps
-        # вместо фиксированного after(frame_delay) — считаем от старта
-        next_time = self.video_start + (math.floor(elapsed * (1000 / self.frame_delay)) + 1) * (self.frame_delay / 1000.0)
+        next_time = self.video_start + (
+            math.floor(elapsed * (1000 / self.frame_delay)) + 1
+        ) * (self.frame_delay / 1000.0)
         wait_ms = max(1, int((next_time - time.time()) * 1000))
         self.video_after = self.root.after(wait_ms, self._play_video_frame)
 
@@ -242,7 +246,6 @@ class YandexCallPrank:
             self._hard_close()
             return
 
-        # освобождаем ресурсы
         if self.cap is not None:
             self.cap.release()
             self.cap = None
