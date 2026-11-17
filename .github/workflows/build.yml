@@ -24,10 +24,12 @@ jobs:
       - name: Build exe
         run: |
           pyinstaller --onefile --windowed --name YandexCall `
+            --icon "icon.ico" `
             --collect-all moviepy `
             --collect-all imageio_ffmpeg `
             --add-data "Dasha.jpeg;." `
             --add-data "Dasha.mp4;." `
+            --add-data "icon.ico;." `
             prank.py
 
       - name: Upload artifact
