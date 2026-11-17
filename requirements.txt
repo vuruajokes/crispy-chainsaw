@@ -1,4 +1,6 @@
-python-vlc
+moviepy
+pygame
+imageio-ffmpeg
 opencv-python
 pillow
 pyinstaller
