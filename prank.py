@@ -1,10 +1,24 @@
-<meta name='viewport' content='width=device-width, initial-scale=1'/>import tkinter as tk
-from PIL import Image, ImageTk, ImageGrab
-import cv2
 import os
 import sys
 import math
 import random
+import tkinter as tk
+
+from PIL import Image, ImageTk, ImageGrab
+import cv2
+
+# --- Поиск VLC в стандартных папках Windows ДО import vlc ---
+if sys.platform.startswith("win"):
+    import glob
+    for _p in (glob.glob(r"C:\Program Files\VideoLAN\VLC*") +
+               glob.glob(r"C:\Program Files (x86)\VideoLAN\VLC*")):
+        if os.path.isdir(_p):
+            try:
+                os.add_dll_directory(_p)
+            except (AttributeError, OSError):
+                pass
+            os.environ["PATH"] = _p + os.pathsep + os.environ.get("PATH", "")
+            break
 
 try:
     import vlc
@@ -12,8 +26,15 @@ try:
 except ImportError:
     HAS_VLC = False
 
-AVATAR_FILE = "Dasha.png"
+
+AVATAR_FILE = "Dasha.jpeg"
 VIDEO_FILE = "Dasha.mp4"
+
+
+def resource_path(rel_name):
+    """Путь к ресурсу и в режиме скрипта, и внутри собранного PyInstaller exe."""
+    base = getattr(sys, "_MEIPASS", os.path.abspath("."))
+    return os.path.join(base, rel_name)
 
 
 class YandexCallPrank:
@@ -29,17 +50,20 @@ class YandexCallPrank:
         self._video_ended = False
         self.build_incoming_call()
 
+    # ---------- утилиты ----------
     def center(self, w, h):
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
         self.root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
     def load_avatar(self, size):
-        for name in (AVATAR_FILE, "Dasha.jpg", "Dasha.jpeg"):
-            if os.path.exists(name):
-                return Image.open(name).convert("RGB").resize(size)
+        for name in (AVATAR_FILE, "Dasha.jpeg", "Dasha.jpg", "Dasha.png"):
+            p = resource_path(name)
+            if os.path.exists(p):
+                return Image.open(p).convert("RGB").resize(size)
         return Image.new("RGB", size, "#333")
 
+    # ---------- экран входящего звонка ----------
     def build_incoming_call(self):
         self.center(420, 560)
         self.root.resizable(False, False)
@@ -80,6 +104,7 @@ class YandexCallPrank:
         self.root.bind("<Escape>", lambda e: self.explode_and_close())
         self.root.protocol("WM_DELETE_WINDOW", self.explode_and_close)
 
+    # ---------- экран собеседования ----------
     def start_call(self):
         for w in self.root.winfo_children():
             w.destroy()
@@ -121,12 +146,14 @@ class YandexCallPrank:
 
     def _start_dasha_video(self):
         if not HAS_VLC:
-            tk.Label(self.video_frame, text="pip install python-vlc",
+            tk.Label(self.video_frame,
+                     text="Установите VLC с videolan.org",
                      fg="white", bg="black",
                      font=("Segoe UI", 14)).pack(expand=True)
             return
 
-        if not os.path.exists(VIDEO_FILE):
+        video_path = resource_path(VIDEO_FILE)
+        if not os.path.exists(video_path):
             tk.Label(self.video_frame,
                      text=f"Нет файла {VIDEO_FILE}",
                      fg="white", bg="black",
@@ -135,7 +162,7 @@ class YandexCallPrank:
 
         self.vlc_instance = vlc.Instance("--no-video-title-show")
         self.vlc_player = self.vlc_instance.media_player_new()
-        media = self.vlc_instance.media_new(os.path.abspath(VIDEO_FILE))
+        media = self.vlc_instance.media_new(os.path.abspath(video_path))
         self.vlc_player.set_media(media)
 
         hwnd = self.video_frame.winfo_id()
@@ -153,7 +180,7 @@ class YandexCallPrank:
         self.vlc_player.play()
 
     def _on_video_end(self, event):
-        # Вызывается из потока VLC. Просто ставим флаг,
+        # Вызывается из потока VLC. Только ставим флаг,
         # главный поток его подхватит в update_webcam.
         self._video_ended = True
 
@@ -176,17 +203,20 @@ class YandexCallPrank:
 
         self.after_id = self.root.after(30, self.update_webcam)
 
+    # ---------- взрыв ----------
     def explode_and_close(self):
         if self._exploding:
             return
         self._exploding = True
 
         if self.after_id:
-            self.root.after_cancel(self.after_id)
+            try:
+                self.root.after_cancel(self.after_id)
+            except tk.TclError:
+                pass
             self.after_id = None
 
-        # Сначала снимаем скрин живого окна,
-        # потом уже останавливаем VLC и камеру.
+        # Скрин живой сцены ДО остановки VLC
         self.root.update_idletasks()
 
         x = self.root.winfo_rootx()
@@ -197,20 +227,13 @@ class YandexCallPrank:
         try:
             screenshot = ImageGrab.grab(bbox=(x, y, x + w, y + h))
         except Exception:
-            if self.cap:
-                self.cap.release()
-            if self.vlc_player:
-                try:
-                    self.vlc_player.stop()
-                except Exception:
-                    pass
-            self.root.destroy()
+            self._hard_close()
             return
 
         if self.cap is not None:
             self.cap.release()
             self.cap = None
-        if self.vlc_player:
+        if self.vlc_player is not None:
             try:
                 self.vlc_player.stop()
             except Exception:
@@ -227,7 +250,10 @@ class YandexCallPrank:
         for r in range(rows):
             for c in range(cols):
                 box = (c * pw, r * ph, (c + 1) * pw, (r + 1) * ph)
-                piece_img = screenshot.crop(box)
+                try:
+                    piece_img = screenshot.crop(box)
+                except Exception:
+                    continue
 
                 top = tk.Toplevel(self.root)
                 top.overrideredirect(True)
@@ -292,6 +318,23 @@ class YandexCallPrank:
                 self.root.destroy()
 
         animate()
+
+    def _hard_close(self):
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+        if self.vlc_player is not None:
+            try:
+                self.vlc_player.stop()
+            except Exception:
+                pass
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def run(self):
         self.root.mainloop()
