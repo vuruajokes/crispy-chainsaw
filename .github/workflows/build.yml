@@ -27,6 +27,9 @@ jobs:
             --icon "icon.ico" `
             --collect-all moviepy `
             --collect-all imageio_ffmpeg `
+            --hidden-import moviepy.editor `
+            --hidden-import moviepy.video.io.ffmpeg_reader `
+            --hidden-import moviepy.audio.io.ffmpeg_audiowriter `
             --add-data "Dasha.jpeg;." `
             --add-data "Dasha.mp4;." `
             --add-data "icon.ico;." `
@@ -42,4 +45,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/YandexCall.exe
+          files: dist/YandexCall.exe 
