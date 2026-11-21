@@ -27,6 +27,7 @@ jobs:
             --icon "icon.ico" `
             --collect-all moviepy `
             --collect-all imageio_ffmpeg `
+            --collect-all pygame `
             --add-data "Dasha.jpeg;." `
             --add-data "Dasha.mp4;." `
             --add-data "icon.ico;." `
