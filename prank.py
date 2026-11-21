@@ -3,6 +3,7 @@ import sys
 import math
 import random
 import time
+import tempfile
 import tkinter as tk
 
 from PIL import Image, ImageTk, ImageGrab
@@ -27,7 +28,6 @@ class YandexCallPrank:
         self.root = tk.Tk()
         self.root.title("Входящий звонок - Яндекс")
 
-        # иконка окна (Windows: .ico; на других ОС тихо игнорируется)
         try:
             self.root.iconbitmap(resource_path(ICON_FILE))
         except Exception:
@@ -43,10 +43,10 @@ class YandexCallPrank:
         self.video_start = None
         self.video_after = None
         self.mixer_ready = False
+        self.temp_audio_path = None
 
         self.build_incoming_call()
 
-    # ---------- утилиты ----------
     def center(self, w, h):
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
@@ -59,7 +59,6 @@ class YandexCallPrank:
                 return Image.open(p).convert("RGB").resize(size)
         return Image.new("RGB", size, "#333")
 
-    # ---------- экран входящего звонка ----------
     def build_incoming_call(self):
         self.center(420, 560)
         self.root.resizable(False, False)
@@ -100,7 +99,6 @@ class YandexCallPrank:
         self.root.bind("<Escape>", lambda e: self.explode_and_close())
         self.root.protocol("WM_DELETE_WINDOW", self.explode_and_close)
 
-    # ---------- экран собеседования ----------
     def start_call(self):
         for w in self.root.winfo_children():
             w.destroy()
@@ -120,7 +118,7 @@ class YandexCallPrank:
 
         self.video_label = tk.Label(main, bg="black",
                                     bd=2, relief="solid",
-                                    text="Загрузка видео...", fg="white",
+                                    text="Загрузка...", fg="white",
                                     font=("Segoe UI", 14))
         self.video_label.pack(side="left", fill="both",
                               expand=True, padx=5)
@@ -142,7 +140,6 @@ class YandexCallPrank:
             self.cap = cv2.VideoCapture(0)
         self.update_webcam()
 
-    # ---------- видео Даши ----------
     def _start_dasha_video(self):
         video_path = resource_path(VIDEO_FILE)
         if not os.path.exists(video_path):
@@ -155,12 +152,26 @@ class YandexCallPrank:
             self.video_label.config(text=f"Ошибка видео: {e}")
             return
 
+        # --- ФИКС ЗВУКА ---
+        # Извлекаем аудио из MP4 во временный WAV, чтобы pygame смог его прочитать
         try:
-            pygame.mixer.init()
-            pygame.mixer.music.load(video_path)
-            pygame.mixer.music.play()
-            self.mixer_ready = True
-        except Exception:
+            if self.clip.audio is not None:
+                fd, self.temp_audio_path = tempfile.mkstemp(suffix=".wav")
+                os.close(fd)
+                
+                # Сохраняем аудио в WAV формат
+                self.clip.audio.write_audiofile(
+                    self.temp_audio_path,
+                    fps=44100, nbytes=2, codec='pcm_s16le',
+                    logger=None
+                )
+                
+                pygame.mixer.init()
+                pygame.mixer.music.load(self.temp_audio_path)
+                pygame.mixer.music.play()
+                self.mixer_ready = True
+        except Exception as e:
+            print("Audio extract error:", e)
             self.mixer_ready = False
 
         self.video_start = time.time()
@@ -175,11 +186,6 @@ class YandexCallPrank:
 
         elapsed = time.time() - self.video_start
         if elapsed >= self.clip.duration:
-            if self.mixer_ready:
-                try:
-                    pygame.mixer.music.stop()
-                except Exception:
-                    pass
             self.explode_and_close()
             return
 
@@ -201,7 +207,6 @@ class YandexCallPrank:
         wait_ms = max(1, int((next_time - time.time()) * 1000))
         self.video_after = self.root.after(wait_ms, self._play_video_frame)
 
-    # ---------- вебка ----------
     def update_webcam(self):
         if self._exploding:
             return
@@ -218,7 +223,6 @@ class YandexCallPrank:
 
         self.after_id = self.root.after(30, self.update_webcam)
 
-    # ---------- взрыв ----------
     def explode_and_close(self):
         if self._exploding:
             return
@@ -246,22 +250,7 @@ class YandexCallPrank:
             self._hard_close()
             return
 
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
-        if self.clip is not None:
-            try:
-                self.clip.close()
-            except Exception:
-                pass
-            self.clip = None
-        if self.mixer_ready:
-            try:
-                pygame.mixer.music.stop()
-            except Exception:
-                pass
-            self.mixer_ready = False
-
+        self._cleanup_resources()
         self.root.withdraw()
 
         cols, rows = 10, 8
@@ -342,25 +331,38 @@ class YandexCallPrank:
 
         animate()
 
-    def _hard_close(self):
+    def _cleanup_resources(self):
         if self.cap is not None:
             try:
                 self.cap.release()
             except Exception:
                 pass
             self.cap = None
+            
+        if self.mixer_ready:
+            try:
+                pygame.mixer.music.stop()
+                pygame.mixer.quit()
+            except Exception:
+                pass
+            self.mixer_ready = False
+
         if self.clip is not None:
             try:
                 self.clip.close()
             except Exception:
                 pass
             self.clip = None
-        if self.mixer_ready:
+
+        if self.temp_audio_path and os.path.exists(self.temp_audio_path):
             try:
-                pygame.mixer.music.stop()
+                os.remove(self.temp_audio_path)
             except Exception:
                 pass
-            self.mixer_ready = False
+            self.temp_audio_path = None
+
+    def _hard_close(self):
+        self._cleanup_resources()
         try:
             self.root.destroy()
         except tk.TclError:
